@@ -31,7 +31,9 @@ Non usa WebView: l'interfaccia è costruita con viste Android native.
   il link.
 - **Ricerca onion**: dato un dominio, legge l'intestazione `Onion-Location` passando
   da un processo Tor incorporato con proxy SOCKS su loopback, e mostra l'indirizzo
-  verificato con un pulsante per aprirlo in Tor Browser.
+  verificato con un pulsante per aprirlo in Tor Browser. La validazione
+  dell'indirizzo v3 usa SHA3-256; su build Android senza provider SHA3
+  (alcune immagini ColorOS) l'app calcola il checksum con un Keccak in Java puro.
 - **Widget**: barra "Chat Laboratorio" per la Home, con apertura chat o dettatura.
 - **Sfondo animato**: servizio live wallpaper Tokyo Night, separato dall'app.
 

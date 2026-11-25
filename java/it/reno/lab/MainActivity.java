@@ -1435,7 +1435,10 @@ public final class MainActivity extends Activity {
             }
         } catch (Exception failure) {
             onion = "";
-            note = "Verifica via Tor non riuscita (" + failure.getClass().getSimpleName() + ").";
+            android.util.Log.w("Laboratorio", "onion fallito per " + domain, failure);
+            String why = failure.getMessage();
+            note = "Verifica via Tor non riuscita (" + failure.getClass().getSimpleName()
+                    + (why == null || why.isEmpty() ? "" : ": " + why) + ").";
         }
         final String result = onion;
         final String detail = note;
@@ -1639,6 +1642,11 @@ public final class MainActivity extends Activity {
             SSLSocket tls = (SSLSocket) factory.createSocket(raw, host, 443, true);
             SSLParameters params = tls.getSSLParameters();
             params.setEndpointIdentificationAlgorithm("HTTPS");
+            try {
+                params.setApplicationProtocols(new String[]{"http/1.1"});
+            } catch (Exception ignored) {
+                // Older providers may not support ALPN.
+            }
             tls.setSSLParameters(params);
             tls.startHandshake();
             String request = "GET / HTTP/1.1\r\nHost: " + host
