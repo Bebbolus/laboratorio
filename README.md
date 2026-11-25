@@ -67,14 +67,21 @@ inclusi in questo repository.
 
 ## Modello
 
-Il modello atteso è `Qwen2.5-1.5B-Instruct` in formato GGUF, quantizzazione Q4_K_M,
-verificato all'avvio per dimensione e SHA-256:
+Il modello predefinito è `Josiefied-Qwen2.5-1.5B-Instruct-abliterated-v3` in formato
+GGUF, quantizzazione Q4_K_M, verificato all'avvio per dimensione e SHA-256:
 
 ```
-6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e
+539a29a046ea0a9c45b6600e14ca7e3cf5ed643ab582d94b4329a6d50c14a3e8
 ```
 
 Va copiato in `Android/data/it.reno.lab/files/models/qwen2.5.gguf`.
+
+Il modello precedente (`Qwen2.5-1.5B-Instruct` originale, SHA-256
+`6a1a2eb6…9407e`) resta accettato tramite importazione: l'app lo avvia segnalando
+"Modello non verificato" e registra dimensione e hash del file importato.
+
+Nota: un modello *abliterated* non ha rifiuti appresi. I limiti dell'app restano
+quelli descritti sotto; il modello non è un filtro di sicurezza.
 
 ## Launcher: cosa manca
 

@@ -69,9 +69,9 @@ import javax.net.ssl.SSLSocketFactory;
 public final class MainActivity extends Activity {
     private static final int MODEL_PICKER = 1;
     private static final int MICROPHONE = 2;
-    private static final long MODEL_SIZE = 1_117_320_736L;
+    private static final long MODEL_SIZE = 986_050_240L;
     private static final String MODEL_SHA =
-            "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e";
+            "539a29a046ea0a9c45b6600e14ca7e3cf5ed643ab582d94b4329a6d50c14a3e8";
     private static final String CHAT_RULES = "Sei l'assistente locale del Reno4. "
             + "Rispondi in italiano salvo richiesta diversa. Aiuta con traduzioni, testi e script. "
             + "Puoi suggerire comandi, ma non eseguirli e non dichiarare di avere accesso a dispositivi, "
@@ -1591,16 +1591,28 @@ public final class MainActivity extends Activity {
 
     // ---------- model ----------
 
-    private boolean correctModel(File file) throws Exception {
-        if (file.length() != MODEL_SIZE) return false;
+    private String expectedSha() {
+        return prefs.getString("model.sha", MODEL_SHA);
+    }
+
+    private long expectedSize() {
+        return prefs.getLong("model.size", MODEL_SIZE);
+    }
+
+    private static String sha256(File file) throws Exception {
         MessageDigest digest = MessageDigest.getInstance("SHA-256");
         try (InputStream input = Files.newInputStream(file.toPath())) {
             byte[] block = new byte[1024 * 1024];
-            for (int count; !closing && (count = input.read(block)) != -1; ) digest.update(block, 0, count);
+            for (int count; (count = input.read(block)) != -1; ) digest.update(block, 0, count);
         }
         StringBuilder hex = new StringBuilder();
         for (byte value : digest.digest()) hex.append(String.format("%02x", value));
-        return !closing && MODEL_SHA.contentEquals(hex);
+        return hex.toString();
+    }
+
+    private boolean correctModel(File file) throws Exception {
+        if (file.length() != expectedSize()) return false;
+        return !closing && expectedSha().contentEquals(sha256(file));
     }
 
     private void startModel(boolean verified) {
@@ -1616,9 +1628,8 @@ public final class MainActivity extends Activity {
         try {
             uiStatus("loading", "Avvio modello");
             if (!verified && !correctModel(model)) {
-                uiStatus("missing", "Modello non valido");
-                uiNotice("Importa la versione Qwen2.5 1.5B Instruct Q4_K_M prevista per questo Reno4.");
-                return;
+                uiStatus("unverified", "Modello non verificato");
+                uiNotice("Modello diverso da quello previsto: avvio senza verifica SHA-256.");
             }
             if (closing) return;
             try (ServerSocket socket = new ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))) {
@@ -1708,8 +1719,13 @@ public final class MainActivity extends Activity {
                         }
                     }
                 }
-                if (!correctModel(temporary)) throw new IOException("Invalid model checksum");
+                long size = Files.size(temporary.toPath());
+                if (size < 200L * 1024 * 1024 || size > 4L * 1024 * 1024 * 1024) {
+                    throw new IOException("Invalid model size");
+                }
+                String checksum = sha256(temporary);
                 Files.move(temporary.toPath(), model.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                prefs.edit().putLong("model.size", size).putString("model.sha", checksum).apply();
                 startModel(true);
             } catch (Exception failure) {
                 uiStatus("missing", "Importazione interrotta");
