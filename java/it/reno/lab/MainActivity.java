@@ -119,6 +119,7 @@ public final class MainActivity extends Activity {
     private TextView title;
     private TextView torDot;
     private LinearLayout currentContent;
+    private TextView streamBody;
     private boolean modelReady;
     private boolean busy;
 
@@ -285,10 +286,10 @@ public final class MainActivity extends Activity {
         bar.setPadding(dp(12), dp(7), dp(4), dp(7));
         bar.setBackgroundColor(Color.rgb(16, 20, 39));
 
-        TextView mark = label("⌁", 19, ACCENT, true);
-        mark.setGravity(Gravity.CENTER);
-        mark.setBackground(rounded(Color.rgb(24, 31, 60), Color.rgb(82, 102, 157), 6));
-        bar.addView(mark, new LinearLayout.LayoutParams(dp(26), dp(26)));
+        ImageButton discover = iconButton(R.drawable.ic_discover, Color.rgb(175, 198, 255));
+        discover.setContentDescription("Scopri");
+        discover.setOnClickListener(view -> discoverSheet());
+        bar.addView(discover, new LinearLayout.LayoutParams(dp(38), dp(38)));
 
         title = label("Nuova chat", 15, TEXT, false);
         title.setSingleLine(true);
@@ -844,6 +845,14 @@ public final class MainActivity extends Activity {
         content.addView(body);
     }
 
+    private void progress(String text) {
+        LinearLayout content = currentContent;
+        if (content == null) return;
+        runOnUiThread(() -> {
+            if (content.getParent() != null) showText(content, text);
+        });
+    }
+
     private void setNotice(String text) {
         if (text == null || text.isEmpty()) {
             notice.setVisibility(View.GONE);
@@ -937,12 +946,15 @@ public final class MainActivity extends Activity {
                 results = new ArrayList<>();
                 note = "Tor non è partito: nessuna ricerca, nessun ripiego in chiaro.";
             } else {
+                progress("Tor pronto · interrogo DuckDuckGo…");
                 results = WebSearch.search(query, this::torGet);
             }
         } catch (Exception failure) {
             results = new ArrayList<>();
             note = "Ricerca non riuscita (" + failure.getClass().getSimpleName() + ").";
         }
+        if (!results.isEmpty()) progress("Trovate " + results.size()
+                + " fonti · preparo la risposta…");
         String summary = null;
         if (!results.isEmpty()) {
             try {
@@ -969,32 +981,62 @@ public final class MainActivity extends Activity {
         messages.put(new JSONObject().put("role", "system").put("content", CHAT_RULES));
         messages.put(new JSONObject().put("role", "user").put("content",
                 "Domanda: " + query + "\n\nRisultati di ricerca:\n" + context
-                        + "Rispondi in italiano, max 120 parole, citando [1], [2]."));
-        byte[] payload = new JSONObject().put("messages", messages).put("max_tokens", 320)
-                .put("temperature", 0.2).put("stream", false)
+                        + "Rispondi in italiano, massimo 120 parole, con una risposta diretta. "
+                        + "Cita le fonti con [1], [2] subito dopo le frasi che le usano."));
+        return streamChat(messages, 360, 0.2);
+    }
+
+    private String streamChat(JSONArray messages, int maxTokens, double temperature) throws Exception {
+        if (server == null || !server.isAlive()) throw new IOException("Model is offline");
+        byte[] payload = new JSONObject().put("messages", messages).put("max_tokens", maxTokens)
+                .put("temperature", temperature).put("stream", true)
                 .toString().getBytes(StandardCharsets.UTF_8);
-        HttpURLConnection connection = connect("/v1/chat/completions", 120000);
+        HttpURLConnection connection = connect("/v1/chat/completions", 180000);
         try {
             connection.setRequestMethod("POST");
             connection.setRequestProperty("Content-Type", "application/json");
+            connection.setRequestProperty("Accept", "text/event-stream");
             connection.setDoOutput(true);
             connection.setFixedLengthStreamingMode(payload.length);
             try (java.io.OutputStream output = connection.getOutputStream()) {
                 output.write(payload);
             }
             if (connection.getResponseCode() != 200) throw new IOException("Model HTTP");
-            String raw;
-            try (InputStream response = connection.getInputStream()) {
-                ByteArrayOutputStream bytes = new ByteArrayOutputStream();
-                byte[] block = new byte[4096];
-                for (int count; (count = response.read(block)) != -1; ) {
-                    bytes.write(block, 0, count);
-                    if (bytes.size() > 256 * 1024) throw new IOException("Reply too large");
-                }
-                raw = new String(bytes.toByteArray(), StandardCharsets.UTF_8);
+            LinearLayout target = currentContent;
+            if (target != null) {
+                runOnUiThread(() -> {
+                    if (target.getParent() == null) return;
+                    target.removeAllViews();
+                    TextView body = label("", 15, TEXT, false);
+                    body.setTextIsSelectable(true);
+                    target.addView(body);
+                    streamBody = body;
+                });
             }
-            return new JSONObject(raw).getJSONArray("choices").getJSONObject(0)
-                    .getJSONObject("message").getString("content").trim();
+            StringBuilder answer = new StringBuilder();
+            java.io.BufferedReader reader = new java.io.BufferedReader(
+                    new java.io.InputStreamReader(connection.getInputStream(), StandardCharsets.UTF_8));
+            for (String line; (line = reader.readLine()) != null && !closing; ) {
+                if (!line.startsWith("data:")) continue;
+                String data = line.substring(5).trim();
+                if (data.isEmpty() || "[DONE]".equals(data)) continue;
+                try {
+                    JSONObject chunk = new JSONObject(data);
+                    String piece = chunk.getJSONArray("choices").getJSONObject(0)
+                            .getJSONObject("delta").optString("content", "");
+                    if (piece.isEmpty()) continue;
+                    answer.append(piece);
+                    final String text = piece;
+                    runOnUiThread(() -> {
+                        if (streamBody != null) {
+                            streamBody.append(text);
+                            scroll.post(() -> scroll.fullScroll(View.FOCUS_DOWN));
+                        }
+                    });
+                } catch (Exception ignored) {
+                }
+            }
+            return answer.toString().trim();
         } finally {
             connection.disconnect();
         }
@@ -1007,38 +1049,49 @@ public final class MainActivity extends Activity {
         if (content == null) content = addMessage(false, "", false);
         content.removeAllViews();
 
-        TextView head = label(results.isEmpty()
+        boolean answered = summary != null && !summary.isEmpty();
+        TextView head = label(answered ? "Risposta" : results.isEmpty()
                 ? "Nessun risultato per «" + query + "»"
-                : "Risultati per «" + query + "» · via Tor", 15, TEXT, false);
+                : "Risultati per «" + query + "»", 13, MUTED, false);
         content.addView(head);
 
-        StringBuilder stored = new StringBuilder(results.isEmpty()
-                ? "Nessun risultato per " + query : "Risultati per " + query);
-        for (int i = 0; i < results.size(); i++) {
-            WebSearch.Result item = results.get(i);
-            LinearLayout entry = new LinearLayout(this);
-            entry.setOrientation(LinearLayout.VERTICAL);
-            entry.setPadding(dp(2), dp(9), dp(2), dp(2));
-            TextView title = label((i + 1) + ". " + item.title, 13, Color.rgb(210, 222, 255), false);
-            entry.addView(title);
-            TextView host = label(WebSearch.hostOf(item.url), 10, MUTED, true);
-            entry.addView(host);
-            if (!item.snippet.isEmpty()) {
-                TextView snippet = label(item.snippet, 12, MUTED, false);
-                snippet.setMaxLines(4);
-                LinearLayout.LayoutParams snippetParams = new LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-                snippetParams.topMargin = dp(3);
-                entry.addView(snippet, snippetParams);
+        if (answered) {
+            TextView answer = label(summary, 15, TEXT, false);
+            answer.setTextIsSelectable(true);
+            LinearLayout.LayoutParams answerParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            answerParams.topMargin = dp(4);
+            content.addView(answer, answerParams);
+        }
+
+        if (!results.isEmpty()) {
+            TextView sourcesTitle = label("Fonti", 12, MUTED, true);
+            LinearLayout.LayoutParams sourcesParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            sourcesParams.topMargin = dp(12);
+            content.addView(sourcesTitle, sourcesParams);
+            for (int i = 0; i < results.size(); i++) {
+                WebSearch.Result item = results.get(i);
+                LinearLayout row = new LinearLayout(this);
+                row.setOrientation(LinearLayout.VERTICAL);
+                row.setPadding(dp(9), dp(7), dp(9), dp(7));
+                row.setBackground(rounded(Color.rgb(24, 33, 60), Color.rgb(67, 81, 125), 7));
+                TextView title = label("[" + (i + 1) + "] " + item.title, 12,
+                        Color.rgb(210, 222, 255), false);
+                title.setMaxLines(2);
+                row.addView(title);
+                TextView host = label(WebSearch.hostOf(item.url), 10, MUTED, true);
+                row.addView(host);
+                row.setOnClickListener(view -> {
+                    ClipboardManager clipboard = getSystemService(ClipboardManager.class);
+                    clipboard.setPrimaryClip(ClipData.newPlainText("Link", item.url));
+                    setNotice("Link copiato: aprilo in un browser.");
+                });
+                LinearLayout.LayoutParams rowParams = new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                rowParams.topMargin = dp(6);
+                content.addView(row, rowParams);
             }
-            entry.setOnClickListener(view -> {
-                ClipboardManager clipboard = getSystemService(ClipboardManager.class);
-                clipboard.setPrimaryClip(ClipData.newPlainText("Link", item.url));
-                setNotice("Link copiato: aprilo in un browser.");
-            });
-            content.addView(entry);
-            stored.append('\n').append(i + 1).append(". ").append(item.title)
-                    .append(" — ").append(item.url);
         }
 
         if (!note.isEmpty()) {
@@ -1048,20 +1101,112 @@ public final class MainActivity extends Activity {
             detailParams.topMargin = dp(8);
             content.addView(detail, detailParams);
         }
-        TextView source = label("Fonti non verificate · apri i link con cautela.", 11, MUTED, false);
+        TextView source = label("Ricerca via Tor · fonti non verificate", 10, MUTED, false);
         LinearLayout.LayoutParams sourceParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         sourceParams.topMargin = dp(8);
         content.addView(source, sourceParams);
 
-        if (summary != null && !summary.isEmpty()) {
-            addMessage(false, summary, true);
-        } else {
-            append("assistant", stored.toString());
+        StringBuilder stored = new StringBuilder(answered ? summary : "Nessun risultato per " + query);
+        for (int i = 0; i < results.size(); i++) {
+            stored.append('\n').append('[').append(i + 1).append("] ")
+                    .append(results.get(i).title).append(" — ").append(results.get(i).url);
         }
+        append("assistant", stored.toString());
         setBusy(false);
         setNotice("");
         scroll.post(() -> scroll.fullScroll(View.FOCUS_DOWN));
+    }
+
+    private void discoverSheet() {
+        LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        list.addView(label("Carico notizie via Tor…", 12, MUTED, false));
+        sheet("Scopri", list, "Aggiorna", this::discoverSheet);
+        netWorker.execute(() -> {
+            List<Discover.Item> tech = new ArrayList<>();
+            List<Discover.Item> news = new ArrayList<>();
+            StringBuilder note = new StringBuilder();
+            try {
+                if (!ensureTor()) {
+                    note.append("Tor non è partito: nessun aggiornamento.");
+                } else {
+                    try {
+                        tech = Discover.hackerNews(this::torGet, 8);
+                    } catch (Exception failure) {
+                        note.append("Hacker News non raggiungibile. ");
+                    }
+                    try {
+                        news.addAll(Discover.rss("www.ansa.it",
+                                "/sito/notizie/topnews/topnews_rss.xml", "ANSA", this::torGet, 5));
+                    } catch (Exception failure) {
+                        note.append("ANSA non raggiungibile. ");
+                    }
+                    try {
+                        news.addAll(Discover.rss("feeds.bbci.co.uk",
+                                "/news/world/rss.xml", "BBC World", this::torGet, 5));
+                    } catch (Exception failure) {
+                        note.append("BBC non raggiungibile. ");
+                    }
+                }
+            } catch (Exception failure) {
+                note.append("Aggiornamento non riuscito.");
+            }
+            final List<Discover.Item> techItems = tech;
+            final List<Discover.Item> newsItems = news;
+            final String message = note.toString().trim();
+            runOnUiThread(() -> {
+                list.removeAllViews();
+                if (!message.isEmpty()) {
+                    list.addView(label(message, 11, Color.rgb(228, 185, 144), false));
+                }
+                addSection(list, "Hacker News", techItems);
+                addSection(list, "Notizie", newsItems);
+                if (techItems.isEmpty() && newsItems.isEmpty() && message.isEmpty()) {
+                    list.addView(label("Nessun contenuto disponibile.", 12, MUTED, false));
+                }
+            });
+        });
+    }
+
+    private void addSection(LinearLayout list, String heading, List<Discover.Item> items) {
+        if (items.isEmpty()) return;
+        TextView header = label(heading, 12, MUTED, true);
+        LinearLayout.LayoutParams headerParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        headerParams.topMargin = dp(12);
+        headerParams.bottomMargin = dp(6);
+        list.addView(header, headerParams);
+        for (Discover.Item item : items) {
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.VERTICAL);
+            row.setPadding(dp(10), dp(9), dp(10), dp(9));
+            row.setBackground(rounded(SURFACE, LINE, 9));
+            TextView title = label(item.title, 13, TEXT, false);
+            row.addView(title);
+            TextView meta = label(item.meta + " · " + WebSearch.hostOf(item.url), 10, MUTED, true);
+            LinearLayout.LayoutParams metaParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            metaParams.topMargin = dp(3);
+            row.addView(meta, metaParams);
+            row.setOnClickListener(view -> openLink(item.url));
+            LinearLayout.LayoutParams rowParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            rowParams.bottomMargin = dp(6);
+            list.addView(row, rowParams);
+        }
+    }
+
+    private void openLink(String url) {
+        try {
+            Intent view = new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url));
+            view.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(view);
+        } catch (Exception failure) {
+            ClipboardManager clipboard = getSystemService(ClipboardManager.class);
+            clipboard.setPrimaryClip(ClipData.newPlainText("Link", url));
+            setNotice("Link copiato.");
+        }
     }
 
     private void reply() {
@@ -1080,32 +1225,7 @@ public final class MainActivity extends Activity {
                 payloadMessages.put(new JSONObject().put("role", role)
                         .put("content", item.getString("content")));
             }
-            byte[] payload = new JSONObject().put("messages", payloadMessages).put("max_tokens", 240)
-                    .put("temperature", 0.35).put("stream", false)
-                    .toString().getBytes(StandardCharsets.UTF_8);
-            connection = connect("/v1/chat/completions", 120000);
-            connection.setRequestMethod("POST");
-            connection.setRequestProperty("Content-Type", "application/json");
-            connection.setDoOutput(true);
-            connection.setFixedLengthStreamingMode(payload.length);
-            try (java.io.OutputStream output = connection.getOutputStream()) {
-                output.write(payload);
-            }
-            if (connection.getResponseCode() != 200) {
-                throw new IOException("Model HTTP " + connection.getResponseCode());
-            }
-            String raw;
-            try (InputStream response = connection.getInputStream()) {
-                ByteArrayOutputStream bytes = new ByteArrayOutputStream();
-                byte[] block = new byte[4096];
-                for (int count; (count = response.read(block)) != -1; ) {
-                    if (bytes.size() + count > 128 * 1024) throw new IOException("Reply too large");
-                    bytes.write(block, 0, count);
-                }
-                raw = new String(bytes.toByteArray(), StandardCharsets.UTF_8);
-            }
-            String answer = new JSONObject(raw).getJSONArray("choices").getJSONObject(0)
-                    .getJSONObject("message").getString("content").trim();
+            String answer = streamChat(payloadMessages, 240, 0.35);
             if (answer.isEmpty()) throw new IOException("Empty reply");
             final String text = answer;
             runOnUiThread(() -> finishReply(text, true));

@@ -15,6 +15,9 @@ Non usa WebView: l'interfaccia è costruita con viste Android native.
   e token di accesso, e parla con l'API OpenAI-compatibile `/v1/chat/completions`.
 - **Dettatura offline**: riconoscimento vocale italiano con Vosk, interamente sul
   dispositivo.
+- **Scopri**: sezione con Hacker News, ANSA e BBC World lette via Tor.
+- **Risposta in streaming**: la risposta compare mentre il modello la genera, con
+  avanzamento visibile ("Tor pronto", "interrogo DuckDuckGo", "preparo la risposta").
 - **Ricerca web via Tor**: scrivendo "cerca …" l'app interroga DuckDuckGo Lite
   (fallback Wikipedia) attraverso il tunnel Tor, mostra le fonti e fa riassumere i
   risultati al modello locale con citazioni [1], [2]. Nessun ripiego in chiaro.
