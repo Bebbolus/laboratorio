@@ -15,6 +15,9 @@ Non usa WebView: l'interfaccia è costruita con viste Android native.
   e token di accesso, e parla con l'API OpenAI-compatibile `/v1/chat/completions`.
 - **Dettatura offline**: riconoscimento vocale italiano con Vosk, interamente sul
   dispositivo.
+- **Ricerca web via Tor**: scrivendo "cerca …" l'app interroga DuckDuckGo Lite
+  (fallback Wikipedia) attraverso il tunnel Tor, mostra le fonti e fa riassumere i
+  risultati al modello locale con citazioni [1], [2]. Nessun ripiego in chiaro.
 - **Ricerca onion**: dato un dominio, legge l'intestazione `Onion-Location` passando
   da un processo Tor incorporato con proxy SOCKS su loopback, e mostra l'indirizzo
   verificato con un pulsante per aprirlo in Tor Browser.
@@ -82,6 +85,9 @@ Va copiato in `Android/data/it.reno.lab/files/models/qwen2.5.gguf`.
 
 ## Limiti noti
 
+- La ricerca web dipende da endpoint pubblici raggiunti via Tor: possono bloccare,
+  cambiare markup o restituire risultati parziali. Le fonti non sono verificate
+  dall'app: i link vanno aperti con cautela.
 - La ricerca onion è **sperimentale**. Il proxy SOCKS è su loopback e non è
   autenticato: non è isolato da altre app del dispositivo. L'assenza di perdite DNS
   non è stata verificata con una cattura di traffico.

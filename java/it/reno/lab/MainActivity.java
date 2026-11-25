@@ -77,8 +77,9 @@ public final class MainActivity extends Activity {
             + "Puoi suggerire comandi, ma non eseguirli e non dichiarare di avere accesso a dispositivi, "
             + "file o Internet. Mostra i comandi in modo leggibile. "
             + "Non inventare indirizzi .onion, link o fonti: l'app verifica gli indirizzi onion dal dominio "
-            + "dichiarato e li apre in Tor Browser. Se una richiesta è poco chiara, chiedi di ripeterla "
-            + "invece di rifiutare.";
+            + "dichiarato e li apre in Tor Browser. Quando l'app ti fornisce risultati di ricerca web, "
+            + "riassumili in italiano citando le fonti con [1], [2] e non inventare dati mancanti. "
+            + "Se una richiesta è poco chiara, chiedi di ripeterla invece di rifiutare.";
     private static final int TOR_PORT = 19050;
     private static final String TOR_BROWSER = "org.torproject.torbrowser";
     private static final int BACKGROUND = Color.rgb(12, 16, 33);
@@ -884,6 +885,19 @@ public final class MainActivity extends Activity {
             input.setText("");
             return;
         }
+        String query = searchQuery(prompt);
+        if (query != null) {
+            input.setText("");
+            if (query.isEmpty()) {
+                setNotice("Cosa devo cercare?");
+                return;
+            }
+            addMessage(true, prompt, true);
+            currentContent = addMessage(false, "Cerco «" + query + "» via Tor…", false);
+            setBusy(true);
+            netWorker.execute(() -> runSearch(query));
+            return;
+        }
         String domain = onionTarget(prompt);
         input.setText("");
         setNotice("");
@@ -903,6 +917,151 @@ public final class MainActivity extends Activity {
         currentContent = addMessage(false, "Sto elaborando…", false);
         setBusy(true);
         worker.execute(this::reply);
+    }
+
+    private static String searchQuery(String prompt) {
+        java.util.regex.Matcher matcher = java.util.regex.Pattern
+                .compile("^(?:cerca|cercami|ricerca|search)\\b\\s*(.*)$",
+                        java.util.regex.Pattern.CASE_INSENSITIVE | java.util.regex.Pattern.DOTALL)
+                .matcher(prompt.trim());
+        if (!matcher.matches()) return null;
+        String query = matcher.group(1).trim();
+        return query.replaceFirst("(?i)^(su\\s+internet|sul\\s+web|online|per)\\s*", "").trim();
+    }
+
+    private void runSearch(String query) {
+        List<WebSearch.Result> results;
+        String note = "";
+        try {
+            if (!ensureTor()) {
+                results = new ArrayList<>();
+                note = "Tor non è partito: nessuna ricerca, nessun ripiego in chiaro.";
+            } else {
+                results = WebSearch.search(query, this::torGet);
+            }
+        } catch (Exception failure) {
+            results = new ArrayList<>();
+            note = "Ricerca non riuscita (" + failure.getClass().getSimpleName() + ").";
+        }
+        String summary = null;
+        if (!results.isEmpty()) {
+            try {
+                summary = summarize(query, results);
+            } catch (Exception ignored) {
+            }
+        }
+        final List<WebSearch.Result> found = results;
+        final String detail = note;
+        final String text = summary;
+        runOnUiThread(() -> showSearch(query, found, detail, text));
+    }
+
+    private String summarize(String query, List<WebSearch.Result> results) throws Exception {
+        if (server == null || !server.isAlive()) return null;
+        StringBuilder context = new StringBuilder();
+        for (int i = 0; i < results.size() && i < 5; i++) {
+            WebSearch.Result item = results.get(i);
+            context.append('[').append(i + 1).append("] ").append(item.title)
+                    .append(" (").append(WebSearch.hostOf(item.url)).append(")\n")
+                    .append(item.snippet).append("\n\n");
+        }
+        JSONArray messages = new JSONArray();
+        messages.put(new JSONObject().put("role", "system").put("content", CHAT_RULES));
+        messages.put(new JSONObject().put("role", "user").put("content",
+                "Domanda: " + query + "\n\nRisultati di ricerca:\n" + context
+                        + "Rispondi in italiano, max 120 parole, citando [1], [2]."));
+        byte[] payload = new JSONObject().put("messages", messages).put("max_tokens", 320)
+                .put("temperature", 0.2).put("stream", false)
+                .toString().getBytes(StandardCharsets.UTF_8);
+        HttpURLConnection connection = connect("/v1/chat/completions", 120000);
+        try {
+            connection.setRequestMethod("POST");
+            connection.setRequestProperty("Content-Type", "application/json");
+            connection.setDoOutput(true);
+            connection.setFixedLengthStreamingMode(payload.length);
+            try (java.io.OutputStream output = connection.getOutputStream()) {
+                output.write(payload);
+            }
+            if (connection.getResponseCode() != 200) throw new IOException("Model HTTP");
+            String raw;
+            try (InputStream response = connection.getInputStream()) {
+                ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+                byte[] block = new byte[4096];
+                for (int count; (count = response.read(block)) != -1; ) {
+                    bytes.write(block, 0, count);
+                    if (bytes.size() > 256 * 1024) throw new IOException("Reply too large");
+                }
+                raw = new String(bytes.toByteArray(), StandardCharsets.UTF_8);
+            }
+            return new JSONObject(raw).getJSONArray("choices").getJSONObject(0)
+                    .getJSONObject("message").getString("content").trim();
+        } finally {
+            connection.disconnect();
+        }
+    }
+
+    private void showSearch(String query, List<WebSearch.Result> results,
+                            String note, String summary) {
+        LinearLayout content = currentContent;
+        currentContent = null;
+        if (content == null) content = addMessage(false, "", false);
+        content.removeAllViews();
+
+        TextView head = label(results.isEmpty()
+                ? "Nessun risultato per «" + query + "»"
+                : "Risultati per «" + query + "» · via Tor", 15, TEXT, false);
+        content.addView(head);
+
+        StringBuilder stored = new StringBuilder(results.isEmpty()
+                ? "Nessun risultato per " + query : "Risultati per " + query);
+        for (int i = 0; i < results.size(); i++) {
+            WebSearch.Result item = results.get(i);
+            LinearLayout entry = new LinearLayout(this);
+            entry.setOrientation(LinearLayout.VERTICAL);
+            entry.setPadding(dp(2), dp(9), dp(2), dp(2));
+            TextView title = label((i + 1) + ". " + item.title, 13, Color.rgb(210, 222, 255), false);
+            entry.addView(title);
+            TextView host = label(WebSearch.hostOf(item.url), 10, MUTED, true);
+            entry.addView(host);
+            if (!item.snippet.isEmpty()) {
+                TextView snippet = label(item.snippet, 12, MUTED, false);
+                snippet.setMaxLines(4);
+                LinearLayout.LayoutParams snippetParams = new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                snippetParams.topMargin = dp(3);
+                entry.addView(snippet, snippetParams);
+            }
+            entry.setOnClickListener(view -> {
+                ClipboardManager clipboard = getSystemService(ClipboardManager.class);
+                clipboard.setPrimaryClip(ClipData.newPlainText("Link", item.url));
+                setNotice("Link copiato: aprilo in un browser.");
+            });
+            content.addView(entry);
+            stored.append('\n').append(i + 1).append(". ").append(item.title)
+                    .append(" — ").append(item.url);
+        }
+
+        if (!note.isEmpty()) {
+            TextView detail = label(note, 11, Color.rgb(228, 185, 144), false);
+            LinearLayout.LayoutParams detailParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            detailParams.topMargin = dp(8);
+            content.addView(detail, detailParams);
+        }
+        TextView source = label("Fonti non verificate · apri i link con cautela.", 11, MUTED, false);
+        LinearLayout.LayoutParams sourceParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        sourceParams.topMargin = dp(8);
+        content.addView(source, sourceParams);
+
+        if (summary != null && !summary.isEmpty()) {
+            addMessage(false, summary, true);
+        } else {
+            append("assistant", stored.toString());
+        }
+        setBusy(false);
+        setNotice("");
+        scroll.post(() -> scroll.fullScroll(View.FOCUS_DOWN));
     }
 
     private void reply() {
@@ -1227,6 +1386,46 @@ public final class MainActivity extends Activity {
             }
             tls.close();
             return reply;
+        } finally {
+            raw.close();
+        }
+    }
+
+    private String torGet(String host, String path) throws Exception {
+        Socket raw = new Socket(new Proxy(Proxy.Type.SOCKS, new InetSocketAddress("127.0.0.1", TOR_PORT)));
+        try {
+            raw.connect(InetSocketAddress.createUnresolved(host, 443), 30000);
+            raw.setSoTimeout(30000);
+            SSLSocketFactory factory = (SSLSocketFactory) SSLSocketFactory.getDefault();
+            SSLSocket tls = (SSLSocket) factory.createSocket(raw, host, 443, true);
+            SSLParameters params = tls.getSSLParameters();
+            params.setEndpointIdentificationAlgorithm("HTTPS");
+            tls.setSSLParameters(params);
+            tls.startHandshake();
+            String request = "GET " + path + " HTTP/1.1\r\nHost: " + host
+                    + "\r\nUser-Agent: Mozilla/5.0 (Linux; Android 12; Laboratorio)\r\n"
+                    + "Accept: text/html,application/json\r\nAccept-Language: it,en;q=0.8\r\n"
+                    + "Connection: close\r\n\r\n";
+            tls.getOutputStream().write(request.getBytes(StandardCharsets.US_ASCII));
+            tls.getOutputStream().flush();
+            java.io.BufferedReader reader = new java.io.BufferedReader(
+                    new java.io.InputStreamReader(tls.getInputStream(), StandardCharsets.ISO_8859_1));
+            String statusLine = reader.readLine();
+            if (statusLine == null) throw new IOException("risposta vuota");
+            String[] parts = statusLine.split(" ");
+            if (parts.length < 2) throw new IOException("stato non valido");
+            int status = Integer.parseInt(parts[1]);
+            for (String line; (line = reader.readLine()) != null && !line.isEmpty(); ) {
+                // Skip headers without buffering the whole response.
+            }
+            if (status < 200 || status >= 300) throw new IOException("HTTP " + status);
+            StringBuilder body = new StringBuilder();
+            char[] block = new char[8192];
+            for (int count; (count = reader.read(block)) != -1; ) {
+                body.append(block, 0, count);
+                if (body.length() > 512 * 1024) throw new IOException("risposta troppo grande");
+            }
+            return body.toString();
         } finally {
             raw.close();
         }
