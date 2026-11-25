@@ -67,12 +67,15 @@ inclusi in questo repository.
 
 ## Modello
 
-Il modello predefinito è `Josiefied-Qwen2.5-1.5B-Instruct-abliterated-v3` in formato
-GGUF, quantizzazione Q4_K_M, verificato all'avvio per dimensione e SHA-256:
+Il modello predefinito è `Qwen2.5-3B-Instruct-abliterated` in formato GGUF,
+quantizzazione Q4_K_M, verificato all'avvio per dimensione e SHA-256:
 
 ```
-539a29a046ea0a9c45b6600e14ca7e3cf5ed643ab582d94b4329a6d50c14a3e8
+c771d34ef5ad81f3a2ffb44a747c61de35b7ea2cc1fa522d9613e872a6dfe9eb
 ```
+
+Sul Reno4 (4 thread, contesto 2048) genera circa 5 token/s ed è risultato molto più
+affidabile del 1.5B abliterated, che sbagliava fatti elementari.
 
 Va copiato in `Android/data/it.reno.lab/files/models/qwen2.5.gguf`.
 

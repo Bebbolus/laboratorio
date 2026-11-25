@@ -69,9 +69,9 @@ import javax.net.ssl.SSLSocketFactory;
 public final class MainActivity extends Activity {
     private static final int MODEL_PICKER = 1;
     private static final int MICROPHONE = 2;
-    private static final long MODEL_SIZE = 986_050_240L;
+    private static final long MODEL_SIZE = 1_929_903_520L;
     private static final String MODEL_SHA =
-            "539a29a046ea0a9c45b6600e14ca7e3cf5ed643ab582d94b4329a6d50c14a3e8";
+            "c771d34ef5ad81f3a2ffb44a747c61de35b7ea2cc1fa522d9613e872a6dfe9eb";
     private static final String CHAT_RULES = "Sei l'assistente locale del Reno4. "
             + "Rispondi in italiano salvo richiesta diversa. Aiuta con traduzioni, testi e script. "
             + "Puoi suggerire comandi, ma non eseguirli e non dichiarare di avere accesso a dispositivi, "
@@ -148,6 +148,33 @@ public final class MainActivity extends Activity {
         openMostRecent();
         worker.execute(() -> startModel(false));
         dispatchWidgetEntry();
+    }
+
+    @Override protected void onResume() {
+        super.onResume();
+        applyKeepScreen();
+    }
+
+    @Override protected void onPause() {
+        getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        super.onPause();
+    }
+
+    private boolean isCharging() {
+        try {
+            Intent status = registerReceiver(null,
+                    new android.content.IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+            return status != null
+                    && status.getIntExtra(android.os.BatteryManager.EXTRA_PLUGGED, 0) != 0;
+        } catch (Exception failure) {
+            return false;
+        }
+    }
+
+    private void applyKeepScreen() {
+        if (isCharging()) {
+            getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        }
     }
 
     @Override protected void onNewIntent(Intent intent) {
@@ -875,6 +902,11 @@ public final class MainActivity extends Activity {
 
     private void setBusy(boolean value) {
         busy = value;
+        if (value) {
+            getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        } else if (!isCharging()) {
+            getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        }
         send.setEnabled(!value);
         send.setAlpha(value ? 0.5f : 1f);
         mic.setEnabled(!value);
@@ -1022,9 +1054,11 @@ public final class MainActivity extends Activity {
                 if (data.isEmpty() || "[DONE]".equals(data)) continue;
                 try {
                     JSONObject chunk = new JSONObject(data);
-                    String piece = chunk.getJSONArray("choices").getJSONObject(0)
-                            .getJSONObject("delta").optString("content", "");
-                    if (piece.isEmpty()) continue;
+                    JSONObject delta = chunk.getJSONArray("choices").getJSONObject(0)
+                            .getJSONObject("delta");
+                    if (delta.isNull("content")) continue;
+                    String piece = delta.optString("content", "");
+                    if (piece.isEmpty() || "null".equals(piece)) continue;
                     answer.append(piece);
                     final String text = piece;
                     runOnUiThread(() -> {
