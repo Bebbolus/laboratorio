@@ -1,0 +1,24 @@
+# build output
+*.apk
+*.aab
+*.apks
+*.idsig
+apk.*/
+
+# signing material
+*.p12
+*.pem
+*.key
+*.pass
+*.jks
+*.keystore
+
+# models and binaries
+*.gguf
+*.bin
+*.zip
+lib*.so
+
+# local
+*.log
+.DS_Store

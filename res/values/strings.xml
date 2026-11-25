@@ -1,0 +1,8 @@
+<resources>
+  <string name="night_wallpaper_name">Tokyo Night · Laboratorio</string>
+  <string name="night_wallpaper_summary">Paesaggio notturno animato</string>
+  <string name="widget_name">Chat Laboratorio</string>
+  <string name="widget_text">Chiedi a Laboratorio…</string>
+  <string name="widget_voice">Detta a Laboratorio</string>
+  <string name="widget_description">Apri la chat locale o avvia la dettatura dalla Home.</string>
+</resources>

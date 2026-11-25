@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <title>Laboratorio</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <canvas id="wallpaper" aria-hidden="true"></canvas>
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark" aria-hidden="true">⌁</span><span>Laboratorio</span></div>
+    <div class="top-actions">
+      <span class="status" id="status"><i></i><span>Verifica modello</span></span>
+      <button class="icon" id="home-widget" type="button" aria-label="Aggiungi widget alla Home" title="Widget Home" hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M12 8v8M8 12h8"/></svg>
+      </button>
+      <button class="icon" id="home-wallpaper" type="button" aria-label="Sfondo Home" title="Sfondo Home" hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m3 16 5-5 5 5 3-3 5 5"/><circle cx="15.5" cy="8.5" r="1.5"/></svg>
+      </button>
+      <button class="icon" id="motion" type="button" aria-label="Pausa sfondo animato" aria-pressed="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 15c3 0 3-6 6-6s3 6 6 6 3-6 6-6"/></svg>
+      </button>
+    </div>
+  </header>
+  <main>
+    <section class="window" aria-labelledby="title">
+      <div class="window-bar">
+        <div class="window-title"><span aria-hidden="true">›_</span> Assistente</div>
+        <button type="button" class="quiet" id="new-chat">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg> Nuova chat
+        </button>
+      </div>
+      <div class="scroll" id="scroll">
+        <div class="welcome" id="welcome">
+          <span class="prompt-mark" aria-hidden="true">›<b>_</b></span>
+          <h1 id="title">Come posso aiutarti?</h1>
+          <p>Scrivi o usa il microfono per dettare.</p>
+          <div class="suggestions" aria-label="Esempi">
+            <button data-prompt="Traduci in italiano questo testo: ">Traduci un testo</button>
+            <button data-prompt="Spiegami questo script, senza eseguirlo: ">Spiega uno script</button>
+            <button data-prompt="Aiutami a organizzare un laboratorio Linux personale.">Organizza il laboratorio</button>
+          </div>
+        </div>
+        <div id="messages" class="messages" role="log" aria-label="Conversazione"></div>
+      </div>
+      <div class="bottom">
+        <p class="notice" id="notice" role="status" hidden></p>
+        <div class="setup" id="setup" hidden>
+          <span id="setup-label">Carica il modello per usare la chat offline.</span>
+          <button type="button" id="import">Importa modello</button>
+          <button type="button" id="retry" hidden>Riprova</button>
+        </div>
+        <form id="composer">
+          <label class="sr-only" for="input">Messaggio</label>
+          <textarea id="input" rows="1" maxlength="3600" placeholder="Scrivi un messaggio…"></textarea>
+          <button class="icon mic" id="mic" type="button" aria-label="Detta un messaggio">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M6 12a6 6 0 0 0 12 0m-6 6v3m-3 0h6"/></svg>
+          </button>
+          <button class="icon send" id="send" type="submit" aria-label="Invia messaggio">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5m-5 5 5-5 5 5"/></svg>
+          </button>
+        </form>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

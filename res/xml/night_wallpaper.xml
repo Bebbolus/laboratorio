@@ -1,0 +1,3 @@
+<wallpaper xmlns:android="http://schemas.android.com/apk/res/android"
+    android:description="@string/night_wallpaper_summary"
+    android:thumbnail="@drawable/ic_lab"/>

@@ -1,0 +1,8 @@
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:minWidth="195dp" android:minHeight="50dp"
+    android:minResizeWidth="170dp" android:minResizeHeight="50dp"
+    android:targetCellWidth="4" android:targetCellHeight="1"
+    android:initialLayout="@layout/lab_widget" android:previewLayout="@layout/lab_widget"
+    android:description="@string/widget_description"
+    android:resizeMode="horizontal" android:widgetCategory="home_screen"
+    android:updatePeriodMillis="0"/>

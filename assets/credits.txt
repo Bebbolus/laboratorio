@@ -1,0 +1,12 @@
+Laboratorio Reno4
+
+Inference: llama.cpp by the ggml-org contributors. MIT license in llama-LICENSE.txt.
+Speech recognition: Vosk API and vosk-model-small-it-0.22 by Alpha Cephei and contributors. Apache 2.0.
+Android native bridge: Java Native Access (JNA), distributed here under Apache 2.0.
+Tor: tor 0.4.9.16 by The Tor Project, BSD 3-Clause, license in tor-LICENSE.txt.
+The bundled binary comes from the installed Tor Browser 16.0.2 (arm64-v8a).
+
+https://github.com/ggml-org/llama.cpp
+https://alphacephei.com/vosk/
+https://github.com/java-native-access/jna
+https://www.torproject.org/

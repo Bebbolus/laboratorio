@@ -1,0 +1,29 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="it.reno.lab"
+    android:versionCode="7" android:versionName="1.6">
+  <uses-sdk android:minSdkVersion="31" android:targetSdkVersion="34"/>
+  <uses-permission android:name="android.permission.INTERNET"/>
+  <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+  <application android:label="Laboratorio" android:icon="@drawable/ic_lab" android:allowBackup="false"
+      android:extractNativeLibs="true" android:networkSecurityConfig="@xml/network"
+      android:theme="@style/AppTheme">
+    <activity android:name=".MainActivity" android:exported="true"
+        android:configChanges="orientation|screenSize|keyboardHidden"
+        android:windowSoftInputMode="adjustResize">
+      <intent-filter>
+        <action android:name="android.intent.action.MAIN"/>
+        <category android:name="android.intent.category.LAUNCHER"/>
+      </intent-filter>
+    </activity>
+    <activity android:name=".WidgetEntry" android:exported="false"
+        android:theme="@android:style/Theme.NoDisplay"/>
+    <receiver android:name=".LabWidget" android:label="@string/widget_name" android:exported="false">
+      <intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE"/></intent-filter>
+      <meta-data android:name="android.appwidget.provider" android:resource="@xml/lab_widget"/>
+    </receiver>
+    <service android:name=".NightWallpaper" android:label="@string/night_wallpaper_name"
+        android:permission="android.permission.BIND_WALLPAPER" android:exported="true">
+      <intent-filter><action android:name="android.service.wallpaper.WallpaperService"/></intent-filter>
+      <meta-data android:name="android.service.wallpaper" android:resource="@xml/night_wallpaper"/>
+    </service>
+  </application>
+</manifest>
