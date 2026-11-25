@@ -280,7 +280,7 @@ public final class MainActivity extends Activity {
         for (int i = 0; i < current.messages.length(); i++) {
             JSONObject item = current.messages.optJSONObject(i);
             if (item == null) continue;
-            addMessage("user".equals(item.optString("role")), item.optString("content"), false);
+            addMessage("user".equals(item.optString("role")), item.optString("content"), false, i);
         }
     }
 
@@ -754,7 +754,9 @@ public final class MainActivity extends Activity {
         menu.getMenu().add(0, 3, 2, "Sfondo Home");
         menu.getMenu().add(0, 4, 3, "Aggiungi widget");
         menu.getMenu().add(0, 5, 4, "Importa modello");
-        menu.getMenu().add(0, 6, 5, "Cancella dati Laboratorio");
+        menu.getMenu().add(0, 7, 5, "Annulla ultimo scambio");
+        menu.getMenu().add(0, 8, 6, "Copia conversazione");
+        menu.getMenu().add(0, 6, 7, "Cancella dati Laboratorio");
         menu.setOnMenuItemClickListener(item -> {
             switch (item.getItemId()) {
                 case 1: newChat(); return true;
@@ -763,6 +765,8 @@ public final class MainActivity extends Activity {
                 case 4: pinWidget(); return true;
                 case 5: pickModel(); return true;
                 case 6: resetDialog(); return true;
+                case 7: undoLastExchange(); return true;
+                case 8: copyConversation(); return true;
                 default: return false;
             }
         });
@@ -831,7 +835,14 @@ public final class MainActivity extends Activity {
     }
 
     private LinearLayout addMessage(boolean fromUser, String text, boolean store) {
-        if (store) append(fromUser ? "user" : "assistant", text);
+        return addMessage(fromUser, text, store, -1);
+    }
+
+    private LinearLayout addMessage(boolean fromUser, String text, boolean store, int index) {
+        if (store) {
+            append(fromUser ? "user" : "assistant", text);
+            index = current == null ? -1 : current.messages.length() - 1;
+        }
         welcome.setVisibility(View.GONE);
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
@@ -855,6 +866,14 @@ public final class MainActivity extends Activity {
         bubble.addView(content, contentParams);
         showText(content, text);
 
+        int position = index;
+        bubble.setTag(position);
+        bubble.setOnLongClickListener(view -> {
+            Object value = view.getTag();
+            if (value instanceof Integer) messageActions((Integer) value);
+            return true;
+        });
+
         row.addView(bubble, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         LinearLayout.LayoutParams rowParams = new LinearLayout.LayoutParams(
@@ -863,6 +882,104 @@ public final class MainActivity extends Activity {
         messages.addView(row, rowParams);
         scroll.post(() -> scroll.fullScroll(View.FOCUS_DOWN));
         return content;
+    }
+
+    private void messageActions(int index) {
+        if (current == null || index < 0 || index >= current.messages.length()) return;
+        JSONObject item = current.messages.optJSONObject(index);
+        if (item == null) return;
+        final String role = item.optString("role");
+        final String text = item.optString("content");
+        String[] actions = {"Copia testo", "Rigenera risposta", "Elimina messaggio",
+                "Torna prima di questo messaggio"};
+        new AlertDialog.Builder(this)
+                .setTitle("assistant".equals(role) ? "Risposta" : "Messaggio")
+                .setItems(actions, (dialog, which) -> {
+                    if (which == 0) {
+                        copyText(text);
+                    } else if (which == 1) {
+                        regenerate(index);
+                    } else if (which == 2) {
+                        current.messages.remove(index);
+                        saveChats();
+                        renderMessages();
+                    } else if (which == 3) {
+                        truncateBefore(index);
+                    }
+                })
+                .setNegativeButton("Annulla", null)
+                .show();
+    }
+
+    private void copyText(String text) {
+        ClipboardManager clipboard = getSystemService(ClipboardManager.class);
+        clipboard.setPrimaryClip(ClipData.newPlainText("Laboratorio", text));
+        setNotice("Testo copiato.");
+    }
+
+    private int lastUserIndex(int from) {
+        for (int i = Math.min(from, current.messages.length() - 1); i >= 0; i--) {
+            JSONObject item = current.messages.optJSONObject(i);
+            if (item != null && "user".equals(item.optString("role"))) return i;
+        }
+        return -1;
+    }
+
+    private void truncateBefore(int index) {
+        while (current.messages.length() > index) current.messages.remove(current.messages.length() - 1);
+        saveChats();
+        renderMessages();
+        setNotice("Conversazione riportata indietro.");
+    }
+
+    private void regenerate(int index) {
+        if (busy) return;
+        int user = lastUserIndex(index);
+        if (user < 0) {
+            setNotice("Nessun messaggio utente da rigenerare.");
+            return;
+        }
+        while (current.messages.length() > user + 1) {
+            current.messages.remove(current.messages.length() - 1);
+        }
+        saveChats();
+        renderMessages();
+        currentContent = addMessage(false, "Sto elaborando…", false);
+        setBusy(true);
+        worker.execute(this::reply);
+    }
+
+    private void undoLastExchange() {
+        if (busy || current == null || current.messages.length() == 0) return;
+        int last = current.messages.length() - 1;
+        JSONObject item = current.messages.optJSONObject(last);
+        if (item != null && "assistant".equals(item.optString("role"))) {
+            current.messages.remove(last);
+        }
+        int user = lastUserIndex(current.messages.length() - 1);
+        if (user >= 0) {
+            while (current.messages.length() > user) {
+                current.messages.remove(current.messages.length() - 1);
+            }
+        }
+        saveChats();
+        renderMessages();
+        setNotice("Ultimo scambio annullato.");
+    }
+
+    private void copyConversation() {
+        if (current == null || current.messages.length() == 0) {
+            setNotice("Conversazione vuota.");
+            return;
+        }
+        StringBuilder text = new StringBuilder();
+        for (int i = 0; i < current.messages.length(); i++) {
+            JSONObject item = current.messages.optJSONObject(i);
+            if (item == null) continue;
+            text.append("user".equals(item.optString("role")) ? "Tu: " : "Assistente: ")
+                    .append(item.optString("content")).append("\n\n");
+        }
+        copyText(text.toString().trim());
     }
 
     private void showText(LinearLayout content, String text) {

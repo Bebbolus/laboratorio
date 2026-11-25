@@ -11,6 +11,9 @@ Non usa WebView: l'interfaccia è costruita con viste Android native.
 - **Home = chat**: l'app può essere il launcher predefinito. Sbloccando il telefono si
   apre la conversazione corrente, con elenco conversazioni in alto (pin, riordino,
   eliminazione) e barra in basso con elenco app e tre spazi configurabili.
+- **Azioni sui messaggi**: pressione lunga su un messaggio per copiare il testo,
+  rigenerare la risposta, eliminare il messaggio o tornare indietro fino a quel punto.
+  Nel menu: "Annulla ultimo scambio" e "Copia conversazione".
 - **Chat locale**: avvia `llama-server` (llama.cpp) su `127.0.0.1` con porta casuale
   e token di accesso, e parla con l'API OpenAI-compatibile `/v1/chat/completions`.
 - **Dettatura offline**: riconoscimento vocale italiano con Vosk, interamente sul
