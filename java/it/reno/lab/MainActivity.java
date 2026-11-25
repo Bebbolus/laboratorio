@@ -1095,12 +1095,16 @@ public final class MainActivity extends Activity {
                 results = new ArrayList<>();
                 note = "Tor non è partito: nessuna ricerca, nessun ripiego in chiaro.";
             } else {
-                progress("Tor pronto · interrogo DuckDuckGo…");
+                progress("Tor pronto · interrogo Brave Search…");
                 results = WebSearch.search(query, this::torGet);
+                note = WebSearch.lastNote;
             }
         } catch (Exception failure) {
             results = new ArrayList<>();
-            note = "Ricerca non riuscita (" + failure.getClass().getSimpleName() + ").";
+            String why = failure.getMessage();
+            android.util.Log.w("Laboratorio", "ricerca fallita", failure);
+            note = "Ricerca non riuscita (" + failure.getClass().getSimpleName()
+                    + (why == null || why.isEmpty() ? "" : ": " + why) + ").";
         }
         if (!results.isEmpty()) progress("Trovate " + results.size()
                 + " fonti · preparo la risposta…");
@@ -1123,7 +1127,7 @@ public final class MainActivity extends Activity {
         for (int i = 0; i < results.size() && i < 5; i++) {
             WebSearch.Result item = results.get(i);
             context.append('[').append(i + 1).append("] ").append(item.title)
-                    .append(" (").append(WebSearch.hostOf(item.url)).append(")\n")
+                    .append(" (").append(item.host).append(")\n")
                     .append(item.snippet).append("\n\n");
         }
         JSONArray messages = new JSONArray();
@@ -1231,12 +1235,14 @@ public final class MainActivity extends Activity {
                         Color.rgb(210, 222, 255), false);
                 title.setMaxLines(2);
                 row.addView(title);
-                TextView host = label(WebSearch.hostOf(item.url), 10, MUTED, true);
+                TextView host = label(item.host, 10, MUTED, true);
                 row.addView(host);
-                row.setOnClickListener(view -> {
+                row.setOnClickListener(view -> openLink(item.url));
+                row.setOnLongClickListener(view -> {
                     ClipboardManager clipboard = getSystemService(ClipboardManager.class);
                     clipboard.setPrimaryClip(ClipData.newPlainText("Link", item.url));
-                    setNotice("Link copiato: aprilo in un browser.");
+                    setNotice("Link copiato.");
+                    return true;
                 });
                 LinearLayout.LayoutParams rowParams = new LinearLayout.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -1671,35 +1677,96 @@ public final class MainActivity extends Activity {
             SSLSocket tls = (SSLSocket) factory.createSocket(raw, host, 443, true);
             SSLParameters params = tls.getSSLParameters();
             params.setEndpointIdentificationAlgorithm("HTTPS");
+            try {
+                params.setApplicationProtocols(new String[]{"http/1.1"});
+            } catch (Exception ignored) {
+                // Older providers may not support ALPN.
+            }
             tls.setSSLParameters(params);
             tls.startHandshake();
+            // Keep-alive matters: Brave Search answers 429 to "Connection: close".
             String request = "GET " + path + " HTTP/1.1\r\nHost: " + host
                     + "\r\nUser-Agent: Mozilla/5.0 (Linux; Android 12; Laboratorio)\r\n"
-                    + "Accept: text/html,application/json\r\nAccept-Language: it,en;q=0.8\r\n"
-                    + "Connection: close\r\n\r\n";
+                    + "Accept: */*\r\nConnection: keep-alive\r\n\r\n";
             tls.getOutputStream().write(request.getBytes(StandardCharsets.US_ASCII));
             tls.getOutputStream().flush();
-            java.io.BufferedReader reader = new java.io.BufferedReader(
-                    new java.io.InputStreamReader(tls.getInputStream(), StandardCharsets.ISO_8859_1));
-            String statusLine = reader.readLine();
+            java.io.InputStream in = tls.getInputStream();
+            String statusLine = readAsciiLine(in);
             if (statusLine == null) throw new IOException("risposta vuota");
             String[] parts = statusLine.split(" ");
             if (parts.length < 2) throw new IOException("stato non valido");
             int status = Integer.parseInt(parts[1]);
-            for (String line; (line = reader.readLine()) != null && !line.isEmpty(); ) {
-                // Skip headers without buffering the whole response.
+            boolean chunked = false;
+            long declared = -1;
+            for (String line; (line = readAsciiLine(in)) != null && !line.isEmpty(); ) {
+                String lower = line.toLowerCase(java.util.Locale.ROOT);
+                if (lower.startsWith("transfer-encoding:") && lower.contains("chunked")) chunked = true;
+                if (lower.startsWith("content-length:")) {
+                    try {
+                        declared = Long.parseLong(lower.substring("content-length:".length()).trim());
+                    } catch (NumberFormatException ignored) {
+                    }
+                }
             }
             if (status < 200 || status >= 300) throw new IOException("HTTP " + status);
-            StringBuilder body = new StringBuilder();
-            char[] block = new char[8192];
-            for (int count; (count = reader.read(block)) != -1; ) {
-                body.append(block, 0, count);
-                if (body.length() > 512 * 1024) throw new IOException("risposta troppo grande");
+            if (declared > 2 * 1024 * 1024) throw new IOException("risposta troppo grande");
+            if (!chunked && declared >= 0) {
+                byte[] body = new byte[(int) declared];
+                int read = 0;
+                while (read < body.length) {
+                    int count = in.read(body, read, body.length - read);
+                    if (count < 0) break;
+                    read += count;
+                }
+                return new String(body, 0, read, StandardCharsets.UTF_8);
             }
-            return body.toString();
+            java.io.ByteArrayOutputStream buffer = new java.io.ByteArrayOutputStream();
+            byte[] block = new byte[8192];
+            for (int count; (count = in.read(block)) != -1; ) {
+                buffer.write(block, 0, count);
+                if (buffer.size() > 2 * 1024 * 1024) throw new IOException("risposta troppo grande");
+            }
+            byte[] bytes = chunked ? dechunk(buffer.toByteArray()) : buffer.toByteArray();
+            return new String(bytes, StandardCharsets.UTF_8);
         } finally {
             raw.close();
         }
+    }
+
+    private static String readAsciiLine(java.io.InputStream in) throws IOException {
+        java.io.ByteArrayOutputStream line = new java.io.ByteArrayOutputStream();
+        for (int value; (value = in.read()) != -1; ) {
+            if (value == '\n') return new String(line.toByteArray(), StandardCharsets.ISO_8859_1)
+                    .replace("\r", "");
+            line.write(value);
+        }
+        return line.size() == 0 ? null : new String(line.toByteArray(), StandardCharsets.ISO_8859_1);
+    }
+
+    private static byte[] dechunk(byte[] body) throws IOException {
+        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+        int at = 0;
+        while (at < body.length) {
+            int eol = at;
+            while (eol < body.length && body[eol] != '\n') eol++;
+            if (eol >= body.length) break;
+            String size = new String(body, at, eol - at, StandardCharsets.ISO_8859_1).trim();
+            int semicolon = size.indexOf(';');
+            if (semicolon >= 0) size = size.substring(0, semicolon).trim();
+            int length;
+            try {
+                length = Integer.parseInt(size, 16);
+            } catch (NumberFormatException invalid) {
+                throw new IOException("chunk non valido");
+            }
+            at = eol + 1;
+            if (length == 0) break;
+            int end = Math.min(at + length, body.length);
+            out.write(body, at, end - at);
+            at = end;
+            while (at < body.length && (body[at] == '\r' || body[at] == '\n')) at++;
+        }
+        return out.toByteArray();
     }
 
     private void launchTor(String value) {

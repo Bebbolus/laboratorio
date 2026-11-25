@@ -20,10 +20,15 @@ Non usa WebView: l'interfaccia è costruita con viste Android native.
   dispositivo.
 - **Scopri**: sezione con Hacker News, ANSA e BBC World lette via Tor.
 - **Risposta in streaming**: la risposta compare mentre il modello la genera, con
-  avanzamento visibile ("Tor pronto", "interrogo DuckDuckGo", "preparo la risposta").
-- **Ricerca web via Tor**: scrivendo "cerca …" l'app interroga DuckDuckGo Lite
+  avanzamento visibile ("Tor pronto", "interrogo Brave Search", "preparo la risposta").
+- **Ricerca web via Tor**: scrivendo "cerca …" l'app interroga Brave Search
   (fallback Wikipedia) attraverso il tunnel Tor, mostra le fonti e fa riassumere i
   risultati al modello locale con citazioni [1], [2]. Nessun ripiego in chiaro.
+  DuckDuckGo, Bing e le istanze SearXNG rifiutano le richieste provenienti dalle
+  uscite Tor, per questo il motore predefinito è Brave: i suoi link sono offuscati
+  (`/go/v1/…`) e l'app legge la destinazione reale dalla pagina intermedia prima di
+  mostrarla. Toccando una fonte si apre nel browser; una pressione prolungata copia
+  il link.
 - **Ricerca onion**: dato un dominio, legge l'intestazione `Onion-Location` passando
   da un processo Tor incorporato con proxy SOCKS su loopback, e mostra l'indirizzo
   verificato con un pulsante per aprirlo in Tor Browser.
