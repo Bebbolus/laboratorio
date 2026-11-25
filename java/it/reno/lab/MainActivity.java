@@ -2,6 +2,7 @@ package it.reno.lab;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.app.WallpaperManager;
 import android.appwidget.AppWidgetManager;
 import android.content.ActivityNotFoundException;
@@ -9,18 +10,22 @@ import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.ComponentName;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
 import android.text.InputType;
+import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -46,6 +51,12 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.Date;
+import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
@@ -76,14 +87,13 @@ public final class MainActivity extends Activity {
     private static final int TEXT = Color.rgb(230, 236, 255);
     private static final int MUTED = Color.rgb(154, 166, 199);
     private static final int ACCENT = Color.rgb(162, 184, 255);
-    private static final int MINT = Color.rgb(137, 215, 208);
+    private static final String SLOT_PREFIX = "slot.";
 
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private final ExecutorService netWorker = Executors.newSingleThreadExecutor();
     private final ExecutorService voiceWorker = Executors.newSingleThreadExecutor();
     private final String accessKey = UUID.randomUUID().toString();
     private final Object torLock = new Object();
-    private JSONArray history = new JSONArray();
 
     private volatile Process server;
     private Process torProcess;
@@ -94,24 +104,46 @@ public final class MainActivity extends Activity {
     private OfflineVoice capture;
     private Boolean widgetVoice;
 
+    private FrameLayout host;
+    private LinearLayout base;
+    private View overlay;
     private ScrollView scroll;
     private LinearLayout messages;
     private LinearLayout welcome;
     private EditText input;
     private ImageButton send;
     private ImageButton mic;
-    private TextView status;
+    private TextView modelDot;
     private TextView notice;
+    private TextView title;
+    private TextView torDot;
     private LinearLayout currentContent;
     private boolean modelReady;
     private boolean busy;
 
+    private SharedPreferences prefs;
+    private File chatFile;
+    private final List<Chat> chats = new ArrayList<>();
+    private Chat current;
+
+    private static final class Chat {
+        String id = UUID.randomUUID().toString();
+        String title = "Nuova chat";
+        boolean pinned;
+        long updated = System.currentTimeMillis();
+        JSONArray messages = new JSONArray();
+    }
+
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
+        prefs = getSharedPreferences("laboratorio", MODE_PRIVATE);
+        chatFile = new File(getFilesDir(), "chats.json");
+        loadChats();
         receiveWidgetEntry(getIntent());
         File models = getExternalFilesDir("models");
         model = new File(models == null ? getFilesDir() : models, "qwen2.5.gguf");
         buildUi();
+        openMostRecent();
         worker.execute(() -> startModel(false));
         dispatchWidgetEntry();
     }
@@ -142,19 +174,114 @@ public final class MainActivity extends Activity {
                 .showSoftInput(input, InputMethodManager.SHOW_IMPLICIT), 140);
     }
 
+    // ---------- conversations ----------
+
+    private void loadChats() {
+        chats.clear();
+        try {
+            JSONArray stored = new JSONArray(new String(
+                    Files.readAllBytes(chatFile.toPath()), StandardCharsets.UTF_8));
+            for (int i = 0; i < stored.length(); i++) {
+                JSONObject item = stored.getJSONObject(i);
+                Chat chat = new Chat();
+                chat.id = item.getString("id");
+                chat.title = item.optString("title", "Nuova chat");
+                chat.pinned = item.optBoolean("pinned", false);
+                chat.updated = item.optLong("updated", 0);
+                chat.messages = item.optJSONArray("messages");
+                if (chat.messages == null) chat.messages = new JSONArray();
+                chats.add(chat);
+            }
+        } catch (Exception ignored) {
+        }
+        sortChats();
+    }
+
+    private void saveChats() {
+        try {
+            JSONArray stored = new JSONArray();
+            for (Chat chat : chats) {
+                stored.put(new JSONObject().put("id", chat.id).put("title", chat.title)
+                        .put("pinned", chat.pinned).put("updated", chat.updated)
+                        .put("messages", chat.messages));
+            }
+            Files.write(chatFile.toPath(), stored.toString().getBytes(StandardCharsets.UTF_8));
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void sortChats() {
+        Collections.sort(chats, new Comparator<Chat>() {
+            @Override public int compare(Chat left, Chat right) {
+                if (left.pinned != right.pinned) return left.pinned ? -1 : 1;
+                return Long.compare(right.updated, left.updated);
+            }
+        });
+    }
+
+    private void openMostRecent() {
+        if (chats.isEmpty()) {
+            newChat();
+            return;
+        }
+        openChat(chats.get(0));
+    }
+
+    private void newChat() {
+        Chat chat = new Chat();
+        chats.add(chat);
+        saveChats();
+        openChat(chat);
+        input.requestFocus();
+    }
+
+    private void openChat(Chat chat) {
+        current = chat;
+        title.setText(chat.title);
+        renderMessages();
+        scroll.post(() -> scroll.fullScroll(View.FOCUS_DOWN));
+        chat.updated = System.currentTimeMillis();
+    }
+
+    private void renderMessages() {
+        messages.removeAllViews();
+        boolean empty = current.messages.length() == 0;
+        welcome.setVisibility(empty ? View.VISIBLE : View.GONE);
+        messages.addView(welcome);
+        for (int i = 0; i < current.messages.length(); i++) {
+            JSONObject item = current.messages.optJSONObject(i);
+            if (item == null) continue;
+            addMessage("user".equals(item.optString("role")), item.optString("content"), false);
+        }
+    }
+
+    private void append(String role, String text) {
+        try {
+            current.messages.put(new JSONObject().put("role", role).put("content", text));
+        } catch (Exception ignored) {
+        }
+        current.updated = System.currentTimeMillis();
+        if (current.title.equals("Nuova chat") && "user".equals(role)) {
+            current.title = text.length() > 42 ? text.substring(0, 42) + "…" : text;
+            title.setText(current.title);
+        }
+        sortChats();
+        saveChats();
+    }
+
     // ---------- interface ----------
 
     private void buildUi() {
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(BACKGROUND);
-        root.setFitsSystemWindows(true);
-        int top = dp(8);
+        host = new FrameLayout(this);
+        host.setBackgroundColor(BACKGROUND);
+        host.setFitsSystemWindows(true);
+        base = new LinearLayout(this);
+        base.setOrientation(LinearLayout.VERTICAL);
 
         LinearLayout bar = new LinearLayout(this);
         bar.setOrientation(LinearLayout.HORIZONTAL);
         bar.setGravity(Gravity.CENTER_VERTICAL);
-        bar.setPadding(dp(12), dp(8), dp(6), dp(8));
+        bar.setPadding(dp(12), dp(7), dp(4), dp(7));
         bar.setBackgroundColor(Color.rgb(16, 20, 39));
 
         TextView mark = label("⌁", 19, ACCENT, true);
@@ -162,28 +289,37 @@ public final class MainActivity extends Activity {
         mark.setBackground(rounded(Color.rgb(24, 31, 60), Color.rgb(82, 102, 157), 6));
         bar.addView(mark, new LinearLayout.LayoutParams(dp(26), dp(26)));
 
-        TextView title = label("Laboratorio", 16, TEXT, false);
-        LinearLayout.LayoutParams titleParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        titleParams.setMarginStart(dp(9));
-        bar.addView(title, titleParams);
+        title = label("Nuova chat", 15, TEXT, false);
+        title.setSingleLine(true);
+        title.setEllipsize(TextUtils.TruncateAt.END);
+        title.setPadding(dp(9), 0, dp(6), 0);
+        bar.addView(title, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
-        View spacer = new View(this);
-        bar.addView(spacer, new LinearLayout.LayoutParams(0, 1, 1f));
-
-        status = label("● Verifica modello", 11, Color.rgb(231, 187, 128), true);
-        status.setPadding(dp(6), dp(4), dp(6), dp(4));
-        status.setOnClickListener(view -> {
+        modelDot = label("●", 12, Color.rgb(110, 120, 150), true);
+        modelDot.setPadding(dp(2), dp(4), dp(2), dp(4));
+        modelDot.setContentDescription("Stato modello");
+        modelDot.setOnClickListener(view -> {
             if (!modelReady) pickModel();
         });
-        bar.addView(status);
+        bar.addView(modelDot);
+
+        torDot = label("●", 14, Color.rgb(110, 120, 150), true);
+        torDot.setPadding(dp(4), dp(4), dp(4), dp(4));
+        torDot.setContentDescription("Stato Tor");
+        torDot.setOnClickListener(view -> torDialog());
+        bar.addView(torDot);
+
+        ImageButton list = iconButton(R.drawable.ic_chats, Color.rgb(175, 198, 255));
+        list.setContentDescription("Conversazioni");
+        list.setOnClickListener(view -> conversationsOverlay());
+        bar.addView(list, new LinearLayout.LayoutParams(dp(38), dp(38)));
 
         ImageButton menu = iconButton(R.drawable.ic_more, Color.rgb(175, 198, 255));
-        menu.setContentDescription("Altre azioni");
+        menu.setContentDescription("Menu");
         menu.setOnClickListener(this::openMenu);
         bar.addView(menu, new LinearLayout.LayoutParams(dp(38), dp(38)));
-
-        root.addView(bar, new LinearLayout.LayoutParams(
+        base.addView(bar, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         scroll = new ScrollView(this);
@@ -197,7 +333,7 @@ public final class MainActivity extends Activity {
         welcome = new LinearLayout(this);
         welcome.setOrientation(LinearLayout.VERTICAL);
         welcome.setGravity(Gravity.CENTER);
-        welcome.setPadding(dp(18), dp(28), dp(18), dp(20));
+        welcome.setPadding(dp(18), dp(24), dp(18), dp(16));
         TextView promptMark = label("›_", 24, ACCENT, true);
         promptMark.setGravity(Gravity.CENTER);
         welcome.addView(promptMark);
@@ -208,32 +344,41 @@ public final class MainActivity extends Activity {
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         headingParams.topMargin = dp(14);
         welcome.addView(heading, headingParams);
-        TextView subtitle = label("Scrivi o usa il microfono per dettare.", 13, MUTED, false);
+        TextView subtitle = label("Scrivi, detta o apri l'elenco app.", 13, MUTED, false);
         subtitle.setGravity(Gravity.CENTER);
         LinearLayout.LayoutParams subtitleParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         subtitleParams.topMargin = dp(6);
         welcome.addView(subtitle, subtitleParams);
-
         addSuggestion("Traduci in italiano questo testo: ");
         addSuggestion("Spiegami questo script, senza eseguirlo: ");
         addSuggestion("Aiutami a organizzare un laboratorio Linux personale.");
-
-        messages.addView(welcome, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        root.addView(scroll, new LinearLayout.LayoutParams(
+        messages.addView(welcome);
+        base.addView(scroll, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
         notice = label("", 12, Color.rgb(228, 185, 144), false);
         notice.setPadding(dp(16), dp(2), dp(16), dp(4));
         notice.setVisibility(View.GONE);
-        root.addView(notice);
+        base.addView(notice);
 
-        LinearLayout composer = new LinearLayout(this);
-        composer.setOrientation(LinearLayout.HORIZONTAL);
-        composer.setGravity(Gravity.BOTTOM);
-        composer.setPadding(dp(10), dp(8), dp(10), dp(10));
-        composer.setBackgroundColor(Color.rgb(17, 23, 45));
+        base.addView(composer(), new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        base.addView(launcherBar(), new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        host.addView(base, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        setContentView(host);
+        renderTorDot();
+    }
+
+    private LinearLayout composer() {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.BOTTOM);
+        row.setPadding(dp(10), dp(8), dp(10), dp(6));
+        row.setBackgroundColor(Color.rgb(17, 23, 45));
 
         input = new EditText(this);
         input.setHint("Scrivi un messaggio…");
@@ -256,7 +401,7 @@ public final class MainActivity extends Activity {
         LinearLayout.LayoutParams inputParams = new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
         inputParams.setMarginEnd(dp(8));
-        composer.addView(input, inputParams);
+        row.addView(input, inputParams);
 
         mic = iconButton(R.drawable.ic_widget_mic, Color.rgb(182, 201, 255));
         mic.setContentDescription("Detta un messaggio");
@@ -269,7 +414,7 @@ public final class MainActivity extends Activity {
         });
         LinearLayout.LayoutParams micParams = new LinearLayout.LayoutParams(dp(42), dp(42));
         micParams.setMarginEnd(dp(6));
-        composer.addView(mic, micParams);
+        row.addView(mic, micParams);
 
         send = new ImageButton(this);
         send.setImageResource(R.drawable.ic_send);
@@ -277,12 +422,368 @@ public final class MainActivity extends Activity {
         send.setBackground(rounded(Color.rgb(164, 185, 250), Color.TRANSPARENT, 12));
         send.setPadding(dp(10), dp(10), dp(10), dp(10));
         send.setOnClickListener(view -> sendPrompt());
-        composer.addView(send, new LinearLayout.LayoutParams(dp(42), dp(42)));
+        row.addView(send, new LinearLayout.LayoutParams(dp(42), dp(42)));
+        return row;
+    }
 
-        root.addView(composer, new LinearLayout.LayoutParams(
+    private LinearLayout launcherBar() {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER);
+        row.setPadding(dp(6), dp(4), dp(6), dp(8));
+        row.setBackgroundColor(Color.rgb(17, 23, 45));
+
+        ImageButton apps = iconButton(R.drawable.ic_apps, Color.rgb(175, 198, 255));
+        apps.setContentDescription("Elenco applicazioni");
+        apps.setOnClickListener(view -> appsOverlay());
+        row.addView(apps, slotParams());
+
+        for (int index = 0; index < 3; index++) {
+            final int slot = index;
+            ImageButton button = new ImageButton(this);
+            button.setBackground(rounded(Color.TRANSPARENT, Color.TRANSPARENT, 10));
+            button.setPadding(dp(9), dp(9), dp(9), dp(9));
+            button.setScaleType(ImageView.ScaleType.FIT_CENTER);
+            button.setOnClickListener(view -> launchSlot(slot));
+            button.setOnLongClickListener(view -> {
+                configureSlot(slot);
+                return true;
+            });
+            row.addView(button, slotParams());
+            bindSlot(button, slot);
+        }
+        return row;
+    }
+
+    private LinearLayout.LayoutParams slotParams() {
+        return new LinearLayout.LayoutParams(0, dp(48), 1f);
+    }
+
+    private void bindSlot(ImageButton button, int slot) {
+        String pkg = prefs.getString(SLOT_PREFIX + slot, defaultSlot(slot));
+        button.setTag(pkg);
+        try {
+            button.setImageDrawable(getPackageManager().getApplicationIcon(pkg));
+        } catch (Exception missing) {
+            button.setImageResource(R.drawable.ic_apps);
+            button.setColorFilter(Color.rgb(175, 198, 255));
+        }
+        button.setContentDescription(labelOf(pkg));
+    }
+
+    private String defaultSlot(int slot) {
+        if (slot == 0) return "org.mozilla.fennec_fdroid";
+        if (slot == 1) return "com.google.android.dialer";
+        return "com.google.android.apps.messaging";
+    }
+
+    private void launchSlot(int slot) {
+        String pkg = prefs.getString(SLOT_PREFIX + slot, defaultSlot(slot));
+        Intent launch = getPackageManager().getLaunchIntentForPackage(pkg);
+        if (launch == null) {
+            configureSlot(slot);
+            return;
+        }
+        startActivity(launch);
+    }
+
+    private String labelOf(String pkg) {
+        try {
+            return getPackageManager().getApplicationLabel(
+                    getPackageManager().getApplicationInfo(pkg, 0)).toString();
+        } catch (Exception missing) {
+            return pkg;
+        }
+    }
+
+    // ---------- overlays ----------
+
+    private void conversationsOverlay() {
+        sortChats();
+        LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        SimpleDateFormat format = new SimpleDateFormat("d MMM HH:mm", Locale.ITALIAN);
+        for (final Chat chat : chats) {
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.VERTICAL);
+            row.setPadding(dp(12), dp(11), dp(12), dp(11));
+            row.setBackground(rounded(SURFACE, LINE, 10));
+            TextView name = label((chat.pinned ? "★ " : "") + chat.title, 14, TEXT, false);
+            name.setSingleLine(true);
+            name.setEllipsize(TextUtils.TruncateAt.END);
+            row.addView(name);
+            TextView meta = label(format.format(new Date(chat.updated))
+                    + " · " + chat.messages.length() + " messaggi", 11, MUTED, true);
+            row.addView(meta);
+            row.setOnClickListener(view -> {
+                closeOverlay();
+                openChat(chat);
+            });
+            row.setOnLongClickListener(view -> {
+                chatActions(chat);
+                return true;
+            });
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            params.bottomMargin = dp(8);
+            list.addView(row, params);
+        }
+        sheet("Conversazioni", list, "Nuova chat", this::newChat);
+    }
+
+    private void chatActions(Chat chat) {
+        String[] actions = chat.pinned
+                ? new String[]{"Togli il pin", "Sposta su", "Sposta giù", "Elimina"}
+                : new String[]{"Fissa in alto", "Sposta su", "Sposta giù", "Elimina"};
+        new AlertDialog.Builder(this)
+                .setTitle(chat.title)
+                .setItems(actions, (dialog, which) -> {
+                    int at = chats.indexOf(chat);
+                    if (which == 0) {
+                        chat.pinned = !chat.pinned;
+                        if (chat.pinned) chat.updated = System.currentTimeMillis();
+                    } else if (which == 1 && at > 0) {
+                        Collections.swap(chats, at, at - 1);
+                    } else if (which == 2 && at >= 0 && at < chats.size() - 1) {
+                        Collections.swap(chats, at, at + 1);
+                    } else if (which == 3) {
+                        chats.remove(chat);
+                        if (current == chat) {
+                            if (chats.isEmpty()) newChat();
+                            else openChat(chats.get(0));
+                        }
+                    }
+                    saveChats();
+                    closeOverlay();
+                    conversationsOverlay();
+                })
+                .setNegativeButton("Annulla", null)
+                .show();
+    }
+
+    private void appsOverlay() {
+        LinearLayout grid = new LinearLayout(this);
+        grid.setOrientation(LinearLayout.VERTICAL);
+        PackageManager manager = getPackageManager();
+        Intent launcherIntent = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER);
+        List<ResolveInfo> resolved = manager.queryIntentActivities(launcherIntent,
+                PackageManager.MATCH_ALL);
+        Collections.sort(resolved, new Comparator<ResolveInfo>() {
+            @Override public int compare(ResolveInfo left, ResolveInfo right) {
+                return left.loadLabel(manager).toString().compareToIgnoreCase(
+                        right.loadLabel(manager).toString());
+            }
+        });
+        LinearLayout row = null;
+        for (int i = 0; i < resolved.size(); i++) {
+            ResolveInfo info = resolved.get(i);
+            if (i % 4 == 0) {
+                row = new LinearLayout(this);
+                row.setOrientation(LinearLayout.HORIZONTAL);
+                grid.addView(row, new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            }
+            final String pkg = info.activityInfo.packageName;
+            LinearLayout cell = new LinearLayout(this);
+            cell.setOrientation(LinearLayout.VERTICAL);
+            cell.setGravity(Gravity.CENTER);
+            cell.setPadding(dp(6), dp(10), dp(6), dp(10));
+            ImageView icon = new ImageView(this);
+            icon.setImageDrawable(info.loadIcon(manager));
+            cell.addView(icon, new LinearLayout.LayoutParams(dp(42), dp(42)));
+            TextView name = label(info.loadLabel(manager).toString(), 10, TEXT, false);
+            name.setGravity(Gravity.CENTER);
+            name.setMaxLines(2);
+            name.setEllipsize(TextUtils.TruncateAt.END);
+            LinearLayout.LayoutParams nameParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            nameParams.topMargin = dp(5);
+            cell.addView(name, nameParams);
+            cell.setOnClickListener(view -> {
+                closeOverlay();
+                Intent launch = manager.getLaunchIntentForPackage(pkg);
+                if (launch != null) startActivity(launch);
+            });
+            row.addView(cell, new LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        }
+        sheet("Applicazioni", grid, null, null);
+    }
+
+    private void sheet(String heading, LinearLayout content, String action, Runnable run) {
+        closeOverlay();
+        FrameLayout dim = new FrameLayout(this);
+        dim.setBackgroundColor(Color.argb(204, 0, 0, 0));
+        dim.setOnClickListener(view -> closeOverlay());
+
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setPadding(dp(16), dp(16), dp(16), dp(10));
+        panel.setBackground(rounded(Color.rgb(16, 20, 39), LINE, 14));
+        panel.setOnClickListener(view -> { });
+
+        LinearLayout header = new LinearLayout(this);
+        header.setOrientation(LinearLayout.HORIZONTAL);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        TextView headingView = label(heading, 16, TEXT, false);
+        headingView.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        header.addView(headingView, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        if (action != null) {
+            TextView actionView = label(action, 11, Color.rgb(225, 232, 255), true);
+            actionView.setPadding(dp(10), dp(8), dp(10), dp(8));
+            actionView.setBackground(rounded(Color.rgb(43, 58, 97), Color.rgb(75, 96, 145), 8));
+            actionView.setOnClickListener(view -> {
+                closeOverlay();
+                run.run();
+            });
+            header.addView(actionView);
+        }
+        panel.addView(header, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        setContentView(root);
+        ScrollView scroller = new ScrollView(this);
+        scroller.addView(content);
+        LinearLayout.LayoutParams scrollerParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f);
+        scrollerParams.topMargin = dp(12);
+        panel.addView(scroller, scrollerParams);
+
+        FrameLayout.LayoutParams panelParams = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+        panelParams.setMargins(dp(14), dp(14), dp(14), dp(14));
+        dim.addView(panel, panelParams);
+        host.addView(dim);
+        overlay = dim;
+    }
+
+    private void closeOverlay() {
+        if (overlay != null) {
+            host.removeView(overlay);
+            overlay = null;
+        }
+    }
+
+    private void torDialog() {
+        String state = torReady ? "Tor attivo (SOCKS su loopback)"
+                : torProcess != null ? "Tor in avvio" : "Tor non avviato";
+        new AlertDialog.Builder(this)
+                .setTitle("Tor")
+                .setMessage(state + "\n\nLa ricerca onion usa un processo Tor incorporato. "
+                        + "Non è una VPN: non protegge il resto del telefono.")
+                .setPositiveButton(torReady || torProcess != null ? "Ferma Tor" : "Chiudi",
+                        (dialog, which) -> {
+                            if (torReady || torProcess != null) {
+                                stopTor();
+                                renderTorDot();
+                                setNotice("Tor fermato.");
+                            }
+                        })
+                .setNegativeButton("Annulla", null)
+                .show();
+    }
+
+    private void renderTorDot() {
+        int color = torReady ? Color.rgb(168, 225, 186)
+                : torProcess != null ? Color.rgb(231, 187, 128)
+                : Color.rgb(110, 120, 150);
+        torDot.setTextColor(color);
+        torDot.setText(torReady ? "●" : "○");
+    }
+
+    private void configureSlot(int slot) {
+        PackageManager manager = getPackageManager();
+        Intent launcherIntent = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER);
+        List<ResolveInfo> resolved = manager.queryIntentActivities(launcherIntent,
+                PackageManager.MATCH_ALL);
+        Collections.sort(resolved, new Comparator<ResolveInfo>() {
+            @Override public int compare(ResolveInfo left, ResolveInfo right) {
+                return left.loadLabel(manager).toString().compareToIgnoreCase(
+                        right.loadLabel(manager).toString());
+            }
+        });
+        final String[] labels = new String[resolved.size()];
+        final String[] packages = new String[resolved.size()];
+        for (int i = 0; i < resolved.size(); i++) {
+            labels[i] = resolved.get(i).loadLabel(manager).toString();
+            packages[i] = resolved.get(i).activityInfo.packageName;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("Scegli app per lo spazio " + (slot + 1))
+                .setItems(labels, (dialog, which) -> {
+                    prefs.edit().putString(SLOT_PREFIX + slot, packages[which]).apply();
+                    rebuild();
+                })
+                .setNegativeButton("Annulla", null)
+                .show();
+    }
+
+    private void openMenu(View anchor) {
+        PopupMenu menu = new PopupMenu(this, anchor);
+        menu.getMenu().add(0, 1, 0, "Nuova chat");
+        menu.getMenu().add(0, 2, 1, "Elenco applicazioni");
+        menu.getMenu().add(0, 3, 2, "Sfondo Home");
+        menu.getMenu().add(0, 4, 3, "Aggiungi widget");
+        menu.getMenu().add(0, 5, 4, "Importa modello");
+        menu.getMenu().add(0, 6, 5, "Cancella dati Laboratorio");
+        menu.setOnMenuItemClickListener(item -> {
+            switch (item.getItemId()) {
+                case 1: newChat(); return true;
+                case 2: appsOverlay(); return true;
+                case 3: wallpaperPreview(); return true;
+                case 4: pinWidget(); return true;
+                case 5: pickModel(); return true;
+                case 6: resetDialog(); return true;
+                default: return false;
+            }
+        });
+        menu.show();
+    }
+
+    private void resetDialog() {
+        new AlertDialog.Builder(this)
+                .setTitle("Cancellare i dati?")
+                .setMessage("Verranno eliminati chat, pin, spazi personalizzati e dati Tor. "
+                        + "Il modello locale resta sul telefono.")
+                .setPositiveButton("Cancella", (dialog, which) -> {
+                    chats.clear();
+                    try {
+                        Files.deleteIfExists(chatFile.toPath());
+                    } catch (Exception ignored) {
+                    }
+                    prefs.edit().clear().apply();
+                    deleteTree(new File(getFilesDir(), "tor"));
+                    stopTor();
+                    newChat();
+                    rebuild();
+                    setNotice("Dati Laboratorio cancellati.");
+                })
+                .setNegativeButton("Annulla", null)
+                .show();
+    }
+
+    private static void deleteTree(File file) {
+        File[] children = file.listFiles();
+        if (children != null) for (File child : children) deleteTree(child);
+        file.delete();
+    }
+
+    private void rebuild() {
+        host.removeAllViews();
+        overlay = null;
+        buildUi();
+        if (current != null) {
+            title.setText(current.title);
+            renderMessages();
+        }
+    }
+
+    @Override public void onBackPressed() {
+        if (overlay != null) {
+            closeOverlay();
+            return;
+        }
+        // Home screen: back does nothing when no overlay is open.
     }
 
     private void addSuggestion(String prompt) {
@@ -300,35 +801,8 @@ public final class MainActivity extends Activity {
         welcome.addView(chip, params);
     }
 
-    private void openMenu(View anchor) {
-        PopupMenu menu = new PopupMenu(this, anchor);
-        menu.getMenu().add(0, 1, 0, "Nuova chat");
-        menu.getMenu().add(0, 2, 1, "Aggiungi widget alla Home");
-        menu.getMenu().add(0, 3, 2, "Sfondo Home");
-        menu.getMenu().add(0, 4, 3, "Importa modello");
-        menu.setOnMenuItemClickListener(item -> {
-            switch (item.getItemId()) {
-                case 1: newChat(); return true;
-                case 2: pinWidget(); return true;
-                case 3: wallpaperPreview(); return true;
-                case 4: pickModel(); return true;
-                default: return false;
-            }
-        });
-        menu.show();
-    }
-
-    private void newChat() {
-        if (busy) return;
-        history = new JSONArray();
-        messages.removeAllViews();
-        messages.addView(welcome);
-        welcome.setVisibility(View.VISIBLE);
-        setNotice("");
-        input.requestFocus();
-    }
-
-    private LinearLayout addMessage(boolean fromUser, String text) {
+    private LinearLayout addMessage(boolean fromUser, String text, boolean store) {
+        if (store) append(fromUser ? "user" : "assistant", text);
         welcome.setVisibility(View.GONE);
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
@@ -340,7 +814,6 @@ public final class MainActivity extends Activity {
         bubble.setBackground(rounded(
                 fromUser ? Color.rgb(41, 57, 94) : SURFACE,
                 fromUser ? Color.rgb(75, 96, 145) : LINE, 12));
-
         TextView tag = label(fromUser ? "Tu" : "Assistente", 10, Color.rgb(185, 201, 255), true);
         tag.setLetterSpacing(0.06f);
         bubble.addView(tag);
@@ -355,7 +828,6 @@ public final class MainActivity extends Activity {
 
         row.addView(bubble, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-
         LinearLayout.LayoutParams rowParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         rowParams.topMargin = dp(12);
@@ -381,12 +853,14 @@ public final class MainActivity extends Activity {
     }
 
     private void setStatus(String state, String text) {
-        status.setText("● " + text);
         int color = Color.rgb(231, 187, 128);
         if ("ready".equals(state)) color = Color.rgb(168, 225, 186);
         else if ("error".equals(state)) color = Color.rgb(239, 149, 170);
-        status.setTextColor(color);
+        modelDot.setTextColor(color);
+        modelDot.setContentDescription(text);
         modelReady = "ready".equals(state);
+        if ("ready".equals(state)) setNotice("");
+        else if ("missing".equals(state) || "error".equals(state)) setNotice(text + " · tocca il punto per importare");
     }
 
     private void setBusy(boolean value) {
@@ -397,15 +871,16 @@ public final class MainActivity extends Activity {
         input.setEnabled(!value);
     }
 
-    // ---------- conversation ----------
+    // ---------- conversation flow ----------
 
     private void sendPrompt() {
         String prompt = input.getText().toString().trim();
         if (prompt.isEmpty() || busy) return;
         if (prompt.matches("(?is).*\\b[a-z2-7]{16,56}\\.onion\\b.*")) {
-            addMessage(true, prompt);
-            addMessage(false, "Non apro indirizzi .onion scritti a mano: non posso verificarne la provenienza. "
-                    + "Chiedimi l'onion di un dominio, per esempio «apri l'onion di torproject.org».");
+            addMessage(true, prompt, true);
+            addMessage(false, "Non apro indirizzi .onion scritti a mano: non posso verificarne la "
+                    + "provenienza. Chiedimi l'onion di un dominio, per esempio "
+                    + "«apri l'onion di torproject.org».", true);
             input.setText("");
             return;
         }
@@ -413,8 +888,9 @@ public final class MainActivity extends Activity {
         input.setText("");
         setNotice("");
         if (domain != null) {
-            addMessage(true, prompt);
-            currentContent = addMessage(false, "Verifico l'indirizzo onion dichiarato da " + domain + "…");
+            addMessage(true, prompt, true);
+            currentContent = addMessage(false, "Verifico l'indirizzo onion dichiarato da "
+                    + domain + "…", false);
             setBusy(true);
             netWorker.execute(() -> resolveOnion(domain));
             return;
@@ -423,12 +899,8 @@ public final class MainActivity extends Activity {
             setNotice("Attendi il modello locale o importalo per iniziare.");
             return;
         }
-        addMessage(true, prompt);
-        try {
-            history.put(new JSONObject().put("role", "user").put("content", prompt));
-        } catch (Exception ignored) {
-        }
-        currentContent = addMessage(false, "Sto elaborando…");
+        addMessage(true, prompt, true);
+        currentContent = addMessage(false, "Sto elaborando…", false);
         setBusy(true);
         worker.execute(this::reply);
     }
@@ -440,6 +912,7 @@ public final class MainActivity extends Activity {
             if (server == null || !server.isAlive()) throw new IOException("Model is offline");
             JSONArray payloadMessages = new JSONArray();
             payloadMessages.put(new JSONObject().put("role", "system").put("content", CHAT_RULES));
+            JSONArray history = current == null ? new JSONArray() : current.messages;
             int from = Math.max(0, history.length() - 5);
             for (int i = from; i < history.length(); i++) {
                 JSONObject item = history.getJSONObject(i);
@@ -489,12 +962,7 @@ public final class MainActivity extends Activity {
         if (currentContent == null) return;
         showText(currentContent, text);
         currentContent = null;
-        if (ok) {
-            try {
-                history.put(new JSONObject().put("role", "assistant").put("content", text));
-            } catch (Exception ignored) {
-            }
-        }
+        if (ok) append("assistant", text);
         setBusy(false);
         scroll.post(() -> scroll.fullScroll(View.FOCUS_DOWN));
     }
@@ -539,9 +1007,7 @@ public final class MainActivity extends Activity {
     }
 
     private void finishOnion(String domain, String onion, String note) {
-        if (currentContent == null) {
-            currentContent = addMessage(false, "");
-        }
+        if (currentContent == null) currentContent = addMessage(false, "", false);
         LinearLayout content = currentContent;
         currentContent = null;
         content.removeAllViews();
@@ -578,6 +1044,9 @@ public final class MainActivity extends Activity {
         sourceParams.topMargin = dp(9);
         content.addView(source, sourceParams);
 
+        append("assistant", onion.isEmpty()
+                ? "Nessun onion verificato per " + domain + "\n" + note
+                : "Onion verificato per " + domain + "\n" + onion + "\n" + note);
         setBusy(false);
         setNotice("");
         scroll.post(() -> scroll.fullScroll(View.FOCUS_DOWN));
@@ -644,7 +1113,10 @@ public final class MainActivity extends Activity {
         if (percent < 0) text = "Tor non disponibile: " + label + ".";
         else if (percent < 100) text = "Tor " + percent + "% · " + label;
         else text = "";
-        runOnUiThread(() -> setNotice(text));
+        runOnUiThread(() -> {
+            setNotice(text);
+            renderTorDot();
+        });
     }
 
     private void stopTor() {
@@ -658,6 +1130,7 @@ public final class MainActivity extends Activity {
             } catch (InterruptedException ignored) {
             }
         }
+        runOnUiThread(this::renderTorDot);
     }
 
     private static int bootstrapPercent(File log) {
@@ -733,7 +1206,7 @@ public final class MainActivity extends Activity {
             tls.setSSLParameters(params);
             tls.startHandshake();
             String request = "GET / HTTP/1.1\r\nHost: " + host
-                    + "\r\nUser-Agent: Laboratorio/1.5\r\nAccept: text/html,*/*\r\nConnection: close\r\n\r\n";
+                    + "\r\nUser-Agent: Laboratorio/2.0\r\nAccept: text/html,*/*\r\nConnection: close\r\n\r\n";
             tls.getOutputStream().write(request.getBytes(StandardCharsets.US_ASCII));
             tls.getOutputStream().flush();
             java.io.BufferedReader reader = new java.io.BufferedReader(
@@ -1026,6 +1499,7 @@ public final class MainActivity extends Activity {
         voiceWorker.shutdownNow();
         stopTor();
         stopServer();
+        saveChats();
         super.onDestroy();
     }
 

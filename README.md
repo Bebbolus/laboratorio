@@ -8,6 +8,9 @@ Non usa WebView: l'interfaccia è costruita con viste Android native.
 
 ## Cosa fa
 
+- **Home = chat**: l'app può essere il launcher predefinito. Sbloccando il telefono si
+  apre la conversazione corrente, con elenco conversazioni in alto (pin, riordino,
+  eliminazione) e barra in basso con elenco app e tre spazi configurabili.
 - **Chat locale**: avvia `llama-server` (llama.cpp) su `127.0.0.1` con porta casuale
   e token di accesso, e parla con l'API OpenAI-compatibile `/v1/chat/completions`.
 - **Dettatura offline**: riconoscimento vocale italiano con Vosk, interamente sul
@@ -66,6 +69,16 @@ verificato all'avvio per dimensione e SHA-256:
 ```
 
 Va copiato in `Android/data/it.reno.lab/files/models/qwen2.5.gguf`.
+
+## Launcher: cosa manca
+
+- Il launcher non ospita ancora widget: il widget Chat Laboratorio va aggiunto su un
+  launcher compatibile.
+- Tenda notifiche, impostazioni rapide e schermata Recenti restano quelle di sistema.
+- Non c'è un killswitch di rete: il pulsante Tor ferma solo il processo Tor
+  incorporato. Un blocco totale del traffico richiede un `VpnService`, non incluso.
+- "Cancella dati Laboratorio" elimina chat, pin, spazi e dati Tor dell'app; non è un
+  ripristino di fabbrica e non tocca il modello.
 
 ## Limiti noti
 
